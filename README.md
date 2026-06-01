@@ -1,0 +1,73 @@
+# esp-ota-simplified
+
+Simple OTA firmware and filesystem update handler for ESP32, built on [ESPAsyncWebServer](https://github.com/mathieucarbou/ESPAsyncWebServer).
+
+Registers three endpoints on your existing server instance:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/ota` | GET | Built-in update UI (no LittleFS required) |
+| `/update/firmware` | POST | Flash new firmware `.bin` |
+| `/update/filesystem` | POST | Flash new filesystem image `.bin` |
+
+## Installation
+
+Add to `platformio.ini`:
+
+```ini
+lib_deps =
+    https://github.com/sensokame/esp-ota-simplified.git#v1.0.0
+```
+
+## Usage
+
+```cpp
+#include <ESPAsyncWebServer.h>
+#include <EspOta.h>
+
+AsyncWebServer server(80);
+
+void setup() {
+    // ... WiFi setup ...
+    EspOta::init(server);
+    server.begin();
+}
+
+void loop() {
+    if (EspOta::rebootPending()) {
+        delay(500);
+        ESP.restart();
+    }
+}
+```
+
+Navigate to `http://<device-ip>/ota` to open the update page.
+
+## API
+
+### `EspOta::init(AsyncWebServer &server)`
+Registers the OTA endpoints on the provided server. Call before `server.begin()`.
+
+### `EspOta::rebootPending()`
+Returns `true` after a successful OTA upload. Check in `loop()` and reboot when true.
+
+## Generating .bin files with PlatformIO
+
+**Firmware:**
+```bash
+pio run
+# → .pio/build/<env>/firmware.bin
+```
+
+**Filesystem:**
+```bash
+pio run --target buildfs
+# → .pio/build/<env>/littlefs.bin
+```
+
+## Changelog
+
+### v1.0.0
+- Initial release
+- Firmware and filesystem OTA endpoints
+- Built-in update UI served from PROGMEM (no LittleFS dependency)
