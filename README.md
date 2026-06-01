@@ -29,7 +29,8 @@ AsyncWebServer server(80);
 
 void setup() {
     // ... WiFi setup ...
-    EspOta::init(server);
+    EspOta::init(server);          // no password
+    // EspOta::init(server, "pw"); // with password
     server.begin();
 }
 
@@ -41,7 +42,19 @@ void loop() {
 }
 ```
 
-Navigate to `http://<device-ip>/ota` to open the update page.
+Navigate to `http://<device-ip>/ota` to open the boot mode update page.
+
+## Authentication
+
+`/ota` and both upload endpoints can be protected with HTTP Basic Auth:
+
+```cpp
+EspOta::init(server, "mypassword");
+```
+
+The browser will prompt for credentials on the first visit. The username is always `ota`; only the password is configurable. Pass `nullptr` (or omit the argument) to disable protection.
+
+> The boot mode page can flash arbitrary firmware — protect it if your device is reachable by untrusted clients on the same network.
 
 ## API
 
