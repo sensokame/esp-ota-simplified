@@ -67,6 +67,10 @@ pio run --target buildfs
 
 ## Changelog
 
+### v1.1.0
+- Boot mode UI with amber styling, elapsed timer, and automatic reconnect polling after reboot
+- Optional HTTP Basic Auth password via `EspOta::init(server, "password")`
+
 ### v1.0.0
 - Initial release
 - Firmware and filesystem OTA endpoints
