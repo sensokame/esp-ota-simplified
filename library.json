@@ -1,0 +1,16 @@
+{
+  "name": "esp-ota-simplified",
+  "version": "1.0.0",
+  "description": "Simple OTA firmware and filesystem update handler for ESP32 with ESPAsyncWebServer",
+  "keywords": ["ota", "esp32", "arduino", "async", "update"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sensokame/esp-ota-simplified"
+  },
+  "authors": [{ "name": "sensokame" }],
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "dependencies": {
+    "mathieucarbou/ESP Async WebServer": "^3.0.0"
+  }
+}
