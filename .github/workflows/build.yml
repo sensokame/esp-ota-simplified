@@ -21,4 +21,9 @@ jobs:
         run: pip install platformio
 
       - name: Build example
-        run: pio ci --lib="." --board=esp32dev examples/basic/basic.ino
+        run: >-
+          pio ci
+          --lib="."
+          --board=esp32dev
+          --project-option="lib_deps=mathieucarbou/AsyncTCP@^3.0.0, mathieucarbou/ESP Async WebServer@^3.0.0"
+          examples/basic/basic.ino
