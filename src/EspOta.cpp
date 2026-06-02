@@ -196,7 +196,7 @@ void init(AsyncWebServer &server, const char *password) {
 
     server.on("/ota", HTTP_GET, [](AsyncWebServerRequest *req) {
         if (!checkAuth(req)) return;
-        req->send_P(200, "text/html", OTA_HTML);
+        req->send(200, "text/html", OTA_HTML);
     });
 
     server.on("/update/firmware", HTTP_POST,
