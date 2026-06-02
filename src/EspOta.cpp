@@ -258,8 +258,8 @@ void init(AsyncWebServer &server, const char *password) {
 
     // POST /ota/login — validate password, set session cookie, enter boot mode
     server.on("/ota/login", HTTP_POST, [](AsyncWebServerRequest *req) {
-        String pwd = req->hasParam("p", true) ? req->getParam("p", true)->value() : "";
-        if (!_password.isEmpty() && pwd != _password) {
+        String input = req->hasParam("p", true) ? req->getParam("p", true)->value() : "";
+        if (!_password.isEmpty() && input != _password) {
             req->send(200, "text/html", LOGIN_HTML);
             return;
         }
