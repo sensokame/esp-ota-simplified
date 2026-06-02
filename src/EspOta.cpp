@@ -239,6 +239,7 @@ static void handleUpload(AsyncWebServerRequest *req, String filename,
     if (final) {
         if (Update.end(true)) {
             Serial.printf("# OTA done: %u bytes\n", index + len);
+            persistBootMode(true); // survive reboot so new firmware starts in BOOT_MODE
             toState(EspOta::State::REBOOTING);
         } else {
             Serial.println("# OTA failed");
@@ -287,10 +288,8 @@ void init(AsyncWebServer &server, const char *password,
             req->send(200, "text/html", LOGIN_HTML);
             return;
         }
-        if (_state != EspOta::State::BOOT_MODE) {
-            persistBootMode(true);
-            toState(EspOta::State::BOOT_MODE);
-        }
+        if (_state != EspOta::State::BOOT_MODE)
+            toState(EspOta::State::BOOT_MODE); // RAM only — no NVS until upload completes
         req->send(200, "text/html", OTA_HTML);
     });
 
@@ -301,8 +300,7 @@ void init(AsyncWebServer &server, const char *password,
             req->send(200, "text/html", LOGIN_HTML);
             return;
         }
-        persistBootMode(true);
-        toState(EspOta::State::BOOT_MODE);
+        toState(EspOta::State::BOOT_MODE); // RAM only — no NVS until upload completes
         AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
         resp->addHeader("Location", "/ota");
         applySessionCookie(resp);
