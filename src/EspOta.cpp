@@ -5,26 +5,39 @@
 #include <esp_ota_ops.h>
 #include <esp_random.h>
 
-static bool    _rebootPending = false;
-static bool    _bootMode      = false;
+static volatile EspOta::State _state = EspOta::State::NORMAL;
 static String  _password;
 static String  _sessionToken;
 
+static const char* stateName(EspOta::State s) {
+    switch (s) {
+        case EspOta::State::NORMAL:    return "NORMAL";
+        case EspOta::State::BOOT_MODE: return "BOOT_MODE";
+        case EspOta::State::FLASHING:  return "FLASHING";
+        case EspOta::State::REBOOTING: return "REBOOTING";
+        default: return "?";
+    }
+}
+
+static void toState(EspOta::State next) {
+    Serial.printf("# OTA %s → %s\n", stateName(_state), stateName(next));
+    _state = next;
+}
+
 // ── NVS ──────────────────────────────────────────────────────────────────────
 
-static void loadBootMode() {
+static void loadPersistedState() {
     Preferences p;
     p.begin("ota-lib", true);
-    _bootMode = p.getBool("boot", false);
+    if (p.getBool("boot", false)) _state = EspOta::State::BOOT_MODE;
     p.end();
 }
 
-static void saveBootMode(bool mode) {
+static void persistBootMode(bool active) {
     Preferences p;
     p.begin("ota-lib", false);
-    p.putBool("boot", mode);
+    p.putBool("boot", active);
     p.end();
-    _bootMode = mode;
 }
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -219,14 +232,16 @@ static void handleUpload(AsyncWebServerRequest *req, String filename,
     if (!index) {
         Serial.printf("# OTA start: %s\n", filename.c_str());
         Update.begin(UPDATE_SIZE_UNKNOWN, type);
+        toState(EspOta::State::FLASHING);
     }
     Update.write(data, len);
     if (final) {
         if (Update.end(true)) {
             Serial.printf("# OTA done: %u bytes\n", index + len);
-            _rebootPending = true;
+            toState(EspOta::State::REBOOTING);
         } else {
             Serial.println("# OTA failed");
+            toState(EspOta::State::BOOT_MODE);
         }
     }
 }
@@ -244,7 +259,7 @@ void init(AsyncWebServer &server, const char *password) {
     _sessionToken = String(buf);
 
     // Restore boot mode from NVS
-    loadBootMode();
+    loadPersistedState();
 
     // GET /ota — login form or boot mode UI
     server.on("/ota", HTTP_GET, [](AsyncWebServerRequest *req) {
@@ -252,32 +267,37 @@ void init(AsyncWebServer &server, const char *password) {
             req->send(200, "text/html", LOGIN_HTML);
             return;
         }
-        if (!_bootMode) saveBootMode(true);
+        if (_state != EspOta::State::BOOT_MODE) {
+            persistBootMode(true);
+            toState(EspOta::State::BOOT_MODE);
+        }
         req->send(200, "text/html", OTA_HTML);
     });
 
-    // POST /ota/login — validate password, set session cookie, enter boot mode
+    // POST /ota/login — validate password, set session cookie, enter BOOT_MODE
     server.on("/ota/login", HTTP_POST, [](AsyncWebServerRequest *req) {
         String input = req->hasParam("p", true) ? req->getParam("p", true)->value() : "";
         if (!_password.isEmpty() && input != _password) {
             req->send(200, "text/html", LOGIN_HTML);
             return;
         }
-        saveBootMode(true);
+        persistBootMode(true);
+        toState(EspOta::State::BOOT_MODE);
         AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
         resp->addHeader("Location", "/ota");
         applySessionCookie(resp);
         req->send(resp);
     });
 
-    // GET /ota/exit — confirm firmware, clear boot mode, redirect home
+    // GET /ota/exit — confirm firmware, BOOT_MODE → NORMAL, redirect home
     server.on("/ota/exit", HTTP_GET, [](AsyncWebServerRequest *req) {
         if (!hasSession(req)) {
             req->redirect("/ota");
             return;
         }
-        saveBootMode(false);
+        persistBootMode(false);
         esp_ota_mark_app_valid_cancel_rollback();
+        toState(EspOta::State::NORMAL);
         AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
         resp->addHeader("Location", "/");
         clearSessionCookie(resp);
@@ -311,8 +331,9 @@ void init(AsyncWebServer &server, const char *password) {
     );
 }
 
-bool rebootPending() { return _rebootPending; }
-bool isBootMode()    { return _bootMode; }
+State state()         { return _state; }
+bool isBootMode()    { return _state == State::BOOT_MODE; }
+bool rebootPending() { return _state == State::REBOOTING; }
 
 void confirm() {
     esp_ota_mark_app_valid_cancel_rollback();
