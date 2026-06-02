@@ -12,8 +12,8 @@ static const EspOta::OtaTarget *_targets     = nullptr;
 static uint8_t                  _targetCount = 0;
 
 const EspOta::OtaTarget EspOta::DEFAULT_TARGETS[2] = {
-    {"firmware",   "Firmware",   U_FLASH,  0, 0},
-    {"filesystem", "Filesystem", U_SPIFFS, 0, 0},
+    {"firmware",   "Firmware",   U_FLASH,  nullptr},
+    {"filesystem", "Filesystem", U_SPIFFS, nullptr},
 };
 
 static const char* stateName(EspOta::State s) {
@@ -228,16 +228,11 @@ fetch('/ota/targets')
 
 static void handleUpload(AsyncWebServerRequest *req, String filename,
                          size_t index, uint8_t *data, size_t len, bool final,
-                         int type, uint32_t address, size_t maxSize) {
+                         int type, const char *partitionLabel) {
     if (!hasSession(req)) { Update.abort(); return; }
     if (!index) {
         Serial.printf("# OTA start: %s\n", filename.c_str());
-        if (type == U_UNKNOWN) {
-            Update.begin(maxSize > 0 ? maxSize : UPDATE_SIZE_UNKNOWN,
-                         U_FLASH, -1, 0, address);
-        } else {
-            Update.begin(UPDATE_SIZE_UNKNOWN, type);
-        }
+        Update.begin(UPDATE_SIZE_UNKNOWN, type, -1, LOW, partitionLabel);
         toState(EspOta::State::FLASHING);
     }
     Update.write(data, len);
@@ -328,9 +323,8 @@ void init(AsyncWebServer &server, const char *password,
 
     // POST /update/<label> — one endpoint per configured target
     for (uint8_t i = 0; i < _targetCount; i++) {
-        const int      type    = _targets[i].type;
-        const uint32_t address = _targets[i].address;
-        const size_t   maxSize = _targets[i].maxSize;
+        const int         type           = _targets[i].type;
+        const char *const partitionLabel = _targets[i].partitionLabel;
         String path = "/update/";
         path += _targets[i].label;
         server.on(path.c_str(), HTTP_POST,
@@ -339,9 +333,9 @@ void init(AsyncWebServer &server, const char *password,
                 bool ok = !Update.hasError();
                 req->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"flash failed\"}");
             },
-            [type, address, maxSize](AsyncWebServerRequest *req, String filename,
+            [type, partitionLabel](AsyncWebServerRequest *req, String filename,
                    size_t index, uint8_t *data, size_t len, bool final) {
-                handleUpload(req, filename, index, data, len, final, type, address, maxSize);
+                handleUpload(req, filename, index, data, len, final, type, partitionLabel);
             }
         );
     }

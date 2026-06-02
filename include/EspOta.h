@@ -13,33 +13,33 @@ namespace EspOta {
 
     // Describes one uploadable target shown in the boot mode UI.
     //
-    // type-based (U_FLASH / U_SPIFFS):
-    //   The Update library selects the correct partition automatically.
-    //   U_FLASH always writes to the inactive OTA app slot.
-    //   U_SPIFFS writes to the filesystem partition.
+    // type = U_FLASH, partitionLabel = nullptr:
+    //   Writes to the inactive OTA app slot (standard alternating OTA behaviour).
     //
-    // address-based (type = U_UNKNOWN):
-    //   Writes directly to the partition at the given flash address and size.
-    //   Use this to target a specific partition by address (e.g. for two-program
-    //   alternation or custom data partitions).
+    // type = U_FLASH, partitionLabel = "app0" / "app1" / ...:
+    //   Writes to the named partition from the partition table CSV.
+    //   Use this to target a specific slot (e.g. two-program alternation).
+    //
+    // type = U_SPIFFS, partitionLabel = nullptr:
+    //   Writes to the filesystem partition.
     struct OtaTarget {
-        const char *label;    // URL key: POST /update/<label>
-        const char *name;     // display name in the boot mode UI
-        int         type;     // U_FLASH, U_SPIFFS, or U_UNKNOWN for address-based
-        uint32_t    address;  // only used when type == U_UNKNOWN
-        size_t      maxSize;  // only used when type == U_UNKNOWN
+        const char *label;          // URL key: POST /update/<label>
+        const char *name;           // display name in the boot mode UI
+        int         type;           // U_FLASH or U_SPIFFS
+        const char *partitionLabel; // nullptr = automatic; or CSV partition name
     };
 
-    // Convenience constructors for common target types.
+    // Convenience constructors.
     inline OtaTarget flashTarget(const char *label, const char *name) {
-        return {label, name, U_FLASH, 0, 0};
+        return {label, name, U_FLASH, nullptr};
     }
     inline OtaTarget spiffsTarget(const char *label, const char *name) {
-        return {label, name, U_SPIFFS, 0, 0};
+        return {label, name, U_SPIFFS, nullptr};
     }
-    inline OtaTarget addressTarget(const char *label, const char *name,
-                                   uint32_t address, size_t maxSize) {
-        return {label, name, U_UNKNOWN, address, maxSize};
+    // Target a specific partition by its name in the CSV (e.g. "app0", "app1").
+    inline OtaTarget partitionTarget(const char *label, const char *name,
+                                     const char *partitionLabel) {
+        return {label, name, U_FLASH, partitionLabel};
     }
 
     // Default targets used when none are specified (firmware + filesystem).
@@ -50,10 +50,9 @@ namespace EspOta {
     // targets     — upload targets to expose; defaults to firmware + filesystem.
     // targetCount — number of entries in targets.
     //
-    // Boot mode behaviour:
-    //   Entering /ota sets BOOT_MODE in NVS (survives reboot).
-    //   GET / should redirect to /ota while isBootMode() is true.
-    //   Boot mode clears only on /ota/exit, which also calls confirm().
+    // Boot mode: entering /ota sets BOOT_MODE in NVS (survives reboot).
+    // GET / should redirect to /ota while isBootMode() is true.
+    // Boot mode clears only on /ota/exit, which also calls confirm().
     void init(AsyncWebServer &server,
               const char *password = nullptr,
               const OtaTarget *targets = DEFAULT_TARGETS,
