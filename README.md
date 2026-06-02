@@ -32,6 +32,7 @@ void setup() {
     EspOta::init(server);          // no password
     // EspOta::init(server, "pw"); // with password
     server.begin();
+    EspOta::confirm();             // mark firmware valid — enables OTA rollback
 }
 
 void loop() {
@@ -64,6 +65,11 @@ Registers the OTA endpoints on the provided server. Call before `server.begin()`
 ### `EspOta::rebootPending()`
 Returns `true` after a successful OTA upload. Check in `loop()` and reboot when true.
 
+### `EspOta::confirm()`
+Marks the running firmware as valid, cancelling any pending OTA rollback. Call once at the end of `setup()` after WiFi and the server are confirmed working.
+
+**OTA rollback:** the ESP32 has two app partitions (`ota_0`, `ota_1`). After an OTA update the device boots the new firmware in an unconfirmed state. If `confirm()` is never called (e.g. the new firmware crashes before reaching it), the bootloader rolls back to the previous firmware on the next reboot. If `confirm()` is called, the new firmware becomes permanent and subsequent OTA writes to the other slot.
+
 ## Generating .bin files with PlatformIO
 
 **Firmware:**
@@ -79,6 +85,10 @@ pio run --target buildfs
 ```
 
 ## Changelog
+
+### v1.2.0
+- `EspOta::confirm()` for OTA rollback support
+- Documented two-partition OTA rollback behaviour
 
 ### v1.1.0
 - Boot mode UI with amber styling, elapsed timer, and automatic reconnect polling after reboot

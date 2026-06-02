@@ -1,6 +1,7 @@
 #include "EspOta.h"
 #include <Update.h>
 #include <Arduino.h>
+#include <esp_ota_ops.h>
 
 static bool _rebootPending = false;
 static String _password;
@@ -224,5 +225,9 @@ void init(AsyncWebServer &server, const char *password) {
 }
 
 bool rebootPending() { return _rebootPending; }
+
+void confirm() {
+    esp_ota_mark_app_valid_cancel_rollback();
+}
 
 }
