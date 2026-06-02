@@ -1,19 +1,75 @@
 #include "EspOta.h"
 #include <Update.h>
 #include <Arduino.h>
+#include <Preferences.h>
 #include <esp_ota_ops.h>
+#include <esp_random.h>
 
-static bool _rebootPending = false;
-static String _password;
+static bool    _rebootPending = false;
+static bool    _bootMode      = false;
+static String  _password;
+static String  _sessionToken;
 
-static bool checkAuth(AsyncWebServerRequest *req) {
-    if (_password.isEmpty()) return true;
-    if (!req->authenticate("ota", _password.c_str())) {
-        req->requestAuthentication();
-        return false;
-    }
-    return true;
+// ── NVS ──────────────────────────────────────────────────────────────────────
+
+static void loadBootMode() {
+    Preferences p;
+    p.begin("ota-lib", true);
+    _bootMode = p.getBool("boot", false);
+    p.end();
 }
+
+static void saveBootMode(bool mode) {
+    Preferences p;
+    p.begin("ota-lib", false);
+    p.putBool("boot", mode);
+    p.end();
+    _bootMode = mode;
+}
+
+// ── Session ───────────────────────────────────────────────────────────────────
+
+static bool hasSession(AsyncWebServerRequest *req) {
+    if (_password.isEmpty()) return true;
+    String cookie = req->header("Cookie");
+    return _sessionToken.length() > 0 &&
+           cookie.indexOf("session=" + _sessionToken) >= 0;
+}
+
+static void applySessionCookie(AsyncWebServerResponse *resp) {
+    resp->addHeader("Set-Cookie",
+        "session=" + _sessionToken + "; Path=/ota; HttpOnly");
+}
+
+static void clearSessionCookie(AsyncWebServerResponse *resp) {
+    resp->addHeader("Set-Cookie",
+        "session=; Path=/ota; HttpOnly; Max-Age=0");
+}
+
+// ── HTML ──────────────────────────────────────────────────────────────────────
+
+static const char LOGIN_HTML[] PROGMEM = R"html(
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Boot Mode</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0a;color:#e0e0e0;font-family:monospace;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.box{text-align:center;padding:40px}
+.badge{background:#ff9500;color:#000;font-size:.7rem;font-weight:700;letter-spacing:3px;padding:4px 10px;border-radius:3px;display:inline-block;margin-bottom:32px}
+input[type=password]{background:#141414;border:1px solid #2a2a2a;color:#e0e0e0;padding:12px 16px;border-radius:4px;font-family:monospace;font-size:.9rem;width:240px;display:block;margin:0 auto 12px;text-align:center}
+input:focus{outline:none;border-color:#ff9500}
+button{padding:10px 0;border:1px solid #ff9500;border-radius:4px;background:transparent;color:#ff9500;font-family:monospace;font-size:.85rem;cursor:pointer;width:240px}
+button:hover{background:#ff9500;color:#000}
+</style></head>
+<body><div class="box">
+<div class="badge">BOOT MODE</div><br><br>
+<form method="POST" action="/ota/login">
+<input type="password" name="p" placeholder="password" autofocus><br>
+<button type="submit">Enter</button>
+</form>
+</div></body></html>
+)html";
 
 static const char OTA_HTML[] PROGMEM = R"html(
 <!DOCTYPE html>
@@ -27,8 +83,8 @@ static const char OTA_HTML[] PROGMEM = R"html(
 body { background: #0a0a0a; color: #e0e0e0; font-family: monospace; padding: 24px; max-width: 480px; margin: 0 auto; }
 .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
 .badge { background: #ff9500; color: #000; font-size: 0.7rem; font-weight: bold; letter-spacing: 3px; padding: 4px 10px; border-radius: 3px; }
-.back { color: #555; font-size: 0.8rem; text-decoration: none; }
-.back:hover { color: #ff9500; }
+.exit-link { color: #555; font-size: 0.8rem; text-decoration: none; }
+.exit-link:hover { color: #ff9500; }
 h1 { color: #ff9500; font-size: 1.4rem; letter-spacing: 3px; margin-bottom: 24px; }
 .card { background: #141414; border: 1px solid #2a2a2a; border-radius: 6px; padding: 20px; margin-bottom: 14px; }
 .card h2 { font-size: 0.65rem; letter-spacing: 3px; color: #444; text-transform: uppercase; margin-bottom: 14px; }
@@ -54,7 +110,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 <div class="topbar">
   <span class="badge">BOOT MODE</span>
-  <a href="/" class="back">← exit</a>
+  <a href="/ota/exit" class="exit-link">exit boot mode &#8594;</a>
 </div>
 
 <h1>UPDATE</h1>
@@ -94,76 +150,59 @@ function sel(t) {
   const f = document.getElementById(t+'-file').files[0];
   if (f) { const l = document.getElementById(t+'-label'); l.textContent = f.name; l.classList.add('selected'); }
 }
-
 function upload(t) {
   const file = document.getElementById(t+'-file').files[0];
   if (!file) return;
-
   const endpoint = t === 'fw' ? '/update/firmware' : '/update/filesystem';
   const wrap = document.getElementById(t+'-wrap');
   const fill = document.getElementById(t+'-fill');
   const st = document.getElementById(t+'-status');
   const btn = document.getElementById(t+'-btn');
-
   wrap.style.display = 'block';
   btn.disabled = true;
   st.className = 'status';
   st.textContent = 'uploading...';
-
   let done = false;
   const xhr = new XMLHttpRequest();
   xhr.open('POST', endpoint);
-
   xhr.upload.onprogress = e => {
     if (e.lengthComputable) {
-      const p = Math.round(e.loaded / e.total * 100);
-      fill.style.width = p + '%';
-      st.textContent = 'uploading... ' + p + '%';
+      const p = Math.round(e.loaded/e.total*100);
+      fill.style.width = p+'%';
+      st.textContent = 'uploading... '+p+'%';
       if (p === 100) done = true;
     }
   };
-
   const onSuccess = () => {
     fill.style.width = '100%';
     st.className = 'status ok';
     st.textContent = 'done';
     startReconnect();
   };
-
   xhr.onload = () => {
     if (xhr.status === 200) onSuccess();
-    else { st.className = 'status error'; st.textContent = 'upload failed'; btn.disabled = false; }
+    else { st.className='status error'; st.textContent='upload failed'; btn.disabled=false; }
   };
-
   xhr.onerror = () => {
     if (done) onSuccess();
-    else { st.className = 'status error'; st.textContent = 'connection lost'; btn.disabled = false; }
+    else { st.className='status error'; st.textContent='connection lost'; btn.disabled=false; }
   };
-
   const form = new FormData();
   form.append('file', file);
   xhr.send(form);
 }
-
 function startReconnect() {
   document.getElementById('main').style.display = 'none';
   document.getElementById('reconnect').style.display = 'block';
-
   let elapsed = 0;
   const countEl = document.getElementById('count');
   const statusEl = document.getElementById('reconnect-status');
-
-  const tick = setInterval(() => {
-    elapsed++;
-    countEl.textContent = elapsed + 's';
-  }, 1000);
-
+  const tick = setInterval(() => { elapsed++; countEl.textContent = elapsed+'s'; }, 1000);
   const poll = () => {
-    fetch('/', { cache: 'no-store' })
-      .then(r => { if (r.ok) { clearInterval(tick); statusEl.textContent = 'back online — redirecting'; window.location.replace('/'); } else setTimeout(poll, 2000); })
+    fetch('/ota', { cache: 'no-store' })
+      .then(r => { if (r.ok) { clearInterval(tick); statusEl.textContent = 'back online'; window.location.replace('/ota'); } else setTimeout(poll, 2000); })
       .catch(() => setTimeout(poll, 2000));
   };
-
   setTimeout(poll, 4000);
 }
 </script>
@@ -171,9 +210,12 @@ function startReconnect() {
 </html>
 )html";
 
+// ── Upload handler ────────────────────────────────────────────────────────────
+
 static void handleUpload(AsyncWebServerRequest *req, String filename,
                          size_t index, uint8_t *data, size_t len, bool final,
                          int type) {
+    if (!hasSession(req)) { Update.abort(); return; }
     if (!index) {
         Serial.printf("# OTA start: %s\n", filename.c_str());
         Update.begin(UPDATE_SIZE_UNKNOWN, type);
@@ -189,19 +231,63 @@ static void handleUpload(AsyncWebServerRequest *req, String filename,
     }
 }
 
+// ── Public API ────────────────────────────────────────────────────────────────
+
 namespace EspOta {
 
 void init(AsyncWebServer &server, const char *password) {
     if (password) _password = String(password);
 
+    // Generate per-boot session token
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%08x%08x", (unsigned)esp_random(), (unsigned)esp_random());
+    _sessionToken = String(buf);
+
+    // Restore boot mode from NVS
+    loadBootMode();
+
+    // GET /ota — login form or boot mode UI
     server.on("/ota", HTTP_GET, [](AsyncWebServerRequest *req) {
-        if (!checkAuth(req)) return;
+        if (!hasSession(req)) {
+            req->send(200, "text/html", LOGIN_HTML);
+            return;
+        }
+        if (!_bootMode) saveBootMode(true);
         req->send(200, "text/html", OTA_HTML);
     });
 
+    // POST /ota/login — validate password, set session cookie, enter boot mode
+    server.on("/ota/login", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String pwd = req->hasParam("p", true) ? req->getParam("p", true)->value() : "";
+        if (!_password.isEmpty() && pwd != _password) {
+            req->send(200, "text/html", LOGIN_HTML);
+            return;
+        }
+        saveBootMode(true);
+        AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
+        resp->addHeader("Location", "/ota");
+        applySessionCookie(resp);
+        req->send(resp);
+    });
+
+    // GET /ota/exit — confirm firmware, clear boot mode, redirect home
+    server.on("/ota/exit", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (!hasSession(req)) {
+            req->redirect("/ota");
+            return;
+        }
+        saveBootMode(false);
+        esp_ota_mark_app_valid_cancel_rollback();
+        AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
+        resp->addHeader("Location", "/");
+        clearSessionCookie(resp);
+        req->send(resp);
+    });
+
+    // POST /update/firmware
     server.on("/update/firmware", HTTP_POST,
         [](AsyncWebServerRequest *req) {
-            if (!checkAuth(req)) return;
+            if (!hasSession(req)) { req->send(403, "application/json", "{\"error\":\"unauthorized\"}"); return; }
             bool ok = !Update.hasError();
             req->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"flash failed\"}");
         },
@@ -211,9 +297,10 @@ void init(AsyncWebServer &server, const char *password) {
         }
     );
 
+    // POST /update/filesystem
     server.on("/update/filesystem", HTTP_POST,
         [](AsyncWebServerRequest *req) {
-            if (!checkAuth(req)) return;
+            if (!hasSession(req)) { req->send(403, "application/json", "{\"error\":\"unauthorized\"}"); return; }
             bool ok = !Update.hasError();
             req->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"flash failed\"}");
         },
@@ -225,6 +312,7 @@ void init(AsyncWebServer &server, const char *password) {
 }
 
 bool rebootPending() { return _rebootPending; }
+bool isBootMode()    { return _bootMode; }
 
 void confirm() {
     esp_ota_mark_app_valid_cancel_rollback();
