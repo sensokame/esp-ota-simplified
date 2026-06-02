@@ -12,8 +12,8 @@ static const EspOta::OtaTarget *_targets     = nullptr;
 static uint8_t                  _targetCount = 0;
 
 const EspOta::OtaTarget EspOta::DEFAULT_TARGETS[2] = {
-    {"firmware",   "Firmware",   U_FLASH},
-    {"filesystem", "Filesystem", U_SPIFFS},
+    {"firmware",   "Firmware",   U_FLASH,  0, 0},
+    {"filesystem", "Filesystem", U_SPIFFS, 0, 0},
 };
 
 static const char* stateName(EspOta::State s) {
@@ -228,11 +228,16 @@ fetch('/ota/targets')
 
 static void handleUpload(AsyncWebServerRequest *req, String filename,
                          size_t index, uint8_t *data, size_t len, bool final,
-                         int type) {
+                         int type, uint32_t address, size_t maxSize) {
     if (!hasSession(req)) { Update.abort(); return; }
     if (!index) {
         Serial.printf("# OTA start: %s\n", filename.c_str());
-        Update.begin(UPDATE_SIZE_UNKNOWN, type);
+        if (type == U_UNKNOWN) {
+            Update.begin(maxSize > 0 ? maxSize : UPDATE_SIZE_UNKNOWN,
+                         U_FLASH, -1, 0, address);
+        } else {
+            Update.begin(UPDATE_SIZE_UNKNOWN, type);
+        }
         toState(EspOta::State::FLASHING);
     }
     Update.write(data, len);
@@ -265,7 +270,23 @@ void init(AsyncWebServer &server, const char *password,
     // Restore boot mode from NVS
     loadPersistedState();
 
-    // GET /ota — login form or boot mode UI
+    // GET /ota/targets — list of upload targets for the UI (registered before /ota)
+    server.on("/ota/targets", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (!hasSession(req)) { req->send(401); return; }
+        String json = "[";
+        for (uint8_t i = 0; i < _targetCount; i++) {
+            if (i > 0) json += ",";
+            json += "{\"label\":\"";
+            json += _targets[i].label;
+            json += "\",\"name\":\"";
+            json += _targets[i].name;
+            json += "\"}";
+        }
+        json += "]";
+        req->send(200, "application/json", json);
+    });
+
+    // GET /ota — login form or boot mode UI (registered after /ota/*)
     server.on("/ota", HTTP_GET, [](AsyncWebServerRequest *req) {
         if (!hasSession(req)) {
             req->send(200, "text/html", LOGIN_HTML);
@@ -302,31 +323,14 @@ void init(AsyncWebServer &server, const char *password,
         persistBootMode(false);
         esp_ota_mark_app_valid_cancel_rollback();
         toState(EspOta::State::NORMAL);
-        AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
-        resp->addHeader("Location", "/");
-        clearSessionCookie(resp);
-        req->send(resp);
-    });
-
-    // GET /ota/targets — list of upload targets for the UI
-    server.on("/ota/targets", HTTP_GET, [](AsyncWebServerRequest *req) {
-        if (!hasSession(req)) { req->send(401); return; }
-        String json = "[";
-        for (uint8_t i = 0; i < _targetCount; i++) {
-            if (i > 0) json += ",";
-            json += "{\"label\":\"";
-            json += _targets[i].label;
-            json += "\",\"name\":\"";
-            json += _targets[i].name;
-            json += "\"}";
-        }
-        json += "]";
-        req->send(200, "application/json", json);
+        req->redirect("/");
     });
 
     // POST /update/<label> — one endpoint per configured target
     for (uint8_t i = 0; i < _targetCount; i++) {
-        const int type = _targets[i].type;
+        const int      type    = _targets[i].type;
+        const uint32_t address = _targets[i].address;
+        const size_t   maxSize = _targets[i].maxSize;
         String path = "/update/";
         path += _targets[i].label;
         server.on(path.c_str(), HTTP_POST,
@@ -335,9 +339,9 @@ void init(AsyncWebServer &server, const char *password,
                 bool ok = !Update.hasError();
                 req->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"flash failed\"}");
             },
-            [type](AsyncWebServerRequest *req, String filename, size_t index,
-                   uint8_t *data, size_t len, bool final) {
-                handleUpload(req, filename, index, data, len, final, type);
+            [type, address, maxSize](AsyncWebServerRequest *req, String filename,
+                   size_t index, uint8_t *data, size_t len, bool final) {
+                handleUpload(req, filename, index, data, len, final, type, address, maxSize);
             }
         );
     }
