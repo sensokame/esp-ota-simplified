@@ -8,6 +8,13 @@
 static volatile EspOta::State _state = EspOta::State::NORMAL;
 static String  _password;
 static String  _sessionToken;
+static const EspOta::OtaTarget *_targets     = nullptr;
+static uint8_t                  _targetCount = 0;
+
+const EspOta::OtaTarget EspOta::DEFAULT_TARGETS[2] = {
+    {"firmware",   "Firmware",   U_FLASH},
+    {"filesystem", "Filesystem", U_SPIFFS},
+};
 
 static const char* stateName(EspOta::State s) {
     switch (s) {
@@ -128,29 +135,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 <h1>UPDATE</h1>
 
-<div id="main">
-  <div class="card">
-    <h2>Firmware</h2>
-    <label class="file-label" for="fw-file" id="fw-label">click to select firmware .bin</label>
-    <input type="file" id="fw-file" accept=".bin" onchange="sel('fw')">
-    <button onclick="upload('fw')" id="fw-btn">Upload firmware</button>
-    <div class="progress-wrap" id="fw-wrap">
-      <div class="progress-bar"><div class="progress-fill" id="fw-fill"></div></div>
-      <div class="status" id="fw-status"></div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Filesystem</h2>
-    <label class="file-label" for="fs-file" id="fs-label">click to select filesystem .bin</label>
-    <input type="file" id="fs-file" accept=".bin" onchange="sel('fs')">
-    <button onclick="upload('fs')" id="fs-btn">Upload filesystem</button>
-    <div class="progress-wrap" id="fs-wrap">
-      <div class="progress-bar"><div class="progress-fill" id="fs-fill"></div></div>
-      <div class="status" id="fs-status"></div>
-    </div>
-  </div>
-</div>
+<div id="main"></div>
 
 <div class="reconnect" id="reconnect">
   <p>Update complete. Rebooting...</p>
@@ -166,18 +151,17 @@ function sel(t) {
 function upload(t) {
   const file = document.getElementById(t+'-file').files[0];
   if (!file) return;
-  const endpoint = t === 'fw' ? '/update/firmware' : '/update/filesystem';
   const wrap = document.getElementById(t+'-wrap');
   const fill = document.getElementById(t+'-fill');
-  const st = document.getElementById(t+'-status');
-  const btn = document.getElementById(t+'-btn');
+  const st   = document.getElementById(t+'-status');
+  const btn  = document.getElementById(t+'-btn');
   wrap.style.display = 'block';
   btn.disabled = true;
   st.className = 'status';
   st.textContent = 'uploading...';
   let done = false;
   const xhr = new XMLHttpRequest();
-  xhr.open('POST', endpoint);
+  xhr.open('POST', '/update/'+t);
   xhr.upload.onprogress = e => {
     if (e.lengthComputable) {
       const p = Math.round(e.loaded/e.total*100);
@@ -218,6 +202,23 @@ function startReconnect() {
   };
   setTimeout(poll, 4000);
 }
+fetch('/ota/targets')
+  .then(r => r.json())
+  .then(targets => {
+    const c = document.getElementById('main');
+    targets.forEach(t => {
+      c.innerHTML += `<div class="card">
+  <h2>${t.name}</h2>
+  <label class="file-label" for="${t.label}-file" id="${t.label}-label">click to select ${t.name.toLowerCase()} .bin</label>
+  <input type="file" id="${t.label}-file" accept=".bin" onchange="sel('${t.label}')">
+  <button onclick="upload('${t.label}')" id="${t.label}-btn">Upload ${t.name.toLowerCase()}</button>
+  <div class="progress-wrap" id="${t.label}-wrap">
+    <div class="progress-bar"><div class="progress-fill" id="${t.label}-fill"></div></div>
+    <div class="status" id="${t.label}-status"></div>
+  </div>
+</div>`;
+    });
+  });
 </script>
 </body>
 </html>
@@ -250,8 +251,11 @@ static void handleUpload(AsyncWebServerRequest *req, String filename,
 
 namespace EspOta {
 
-void init(AsyncWebServer &server, const char *password) {
+void init(AsyncWebServer &server, const char *password,
+          const OtaTarget *targets, uint8_t targetCount) {
     if (password) _password = String(password);
+    _targets     = targets;
+    _targetCount = targetCount;
 
     // Generate per-boot session token
     char buf[17];
@@ -304,31 +308,39 @@ void init(AsyncWebServer &server, const char *password) {
         req->send(resp);
     });
 
-    // POST /update/firmware
-    server.on("/update/firmware", HTTP_POST,
-        [](AsyncWebServerRequest *req) {
-            if (!hasSession(req)) { req->send(403, "application/json", "{\"error\":\"unauthorized\"}"); return; }
-            bool ok = !Update.hasError();
-            req->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"flash failed\"}");
-        },
-        [](AsyncWebServerRequest *req, String filename, size_t index,
-           uint8_t *data, size_t len, bool final) {
-            handleUpload(req, filename, index, data, len, final, U_FLASH);
+    // GET /ota/targets — list of upload targets for the UI
+    server.on("/ota/targets", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (!hasSession(req)) { req->send(401); return; }
+        String json = "[";
+        for (uint8_t i = 0; i < _targetCount; i++) {
+            if (i > 0) json += ",";
+            json += "{\"label\":\"";
+            json += _targets[i].label;
+            json += "\",\"name\":\"";
+            json += _targets[i].name;
+            json += "\"}";
         }
-    );
+        json += "]";
+        req->send(200, "application/json", json);
+    });
 
-    // POST /update/filesystem
-    server.on("/update/filesystem", HTTP_POST,
-        [](AsyncWebServerRequest *req) {
-            if (!hasSession(req)) { req->send(403, "application/json", "{\"error\":\"unauthorized\"}"); return; }
-            bool ok = !Update.hasError();
-            req->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"flash failed\"}");
-        },
-        [](AsyncWebServerRequest *req, String filename, size_t index,
-           uint8_t *data, size_t len, bool final) {
-            handleUpload(req, filename, index, data, len, final, U_SPIFFS);
-        }
-    );
+    // POST /update/<label> — one endpoint per configured target
+    for (uint8_t i = 0; i < _targetCount; i++) {
+        const int type = _targets[i].type;
+        String path = "/update/";
+        path += _targets[i].label;
+        server.on(path.c_str(), HTTP_POST,
+            [](AsyncWebServerRequest *req) {
+                if (!hasSession(req)) { req->send(403, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+                bool ok = !Update.hasError();
+                req->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"flash failed\"}");
+            },
+            [type](AsyncWebServerRequest *req, String filename, size_t index,
+                   uint8_t *data, size_t len, bool final) {
+                handleUpload(req, filename, index, data, len, final, type);
+            }
+        );
+    }
 }
 
 State state()         { return _state; }
