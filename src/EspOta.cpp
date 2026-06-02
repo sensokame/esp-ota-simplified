@@ -310,15 +310,14 @@ void init(AsyncWebServer &server, const char *password,
     });
 
     // GET /ota/exit — confirm firmware, BOOT_MODE → NORMAL, redirect home
+    // No session required — exiting is always safe.
     server.on("/ota/exit", HTTP_GET, [](AsyncWebServerRequest *req) {
-        if (!hasSession(req)) {
-            req->redirect("/ota");
-            return;
-        }
         persistBootMode(false);
         esp_ota_mark_app_valid_cancel_rollback();
         toState(EspOta::State::NORMAL);
-        req->redirect("/");
+        AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
+        resp->addHeader("Location", "/");
+        req->send(resp);
     });
 
     // POST /update/<label> — one endpoint per configured target
