@@ -266,7 +266,9 @@ void init(AsyncWebServer &server, const char *password,
     // Restore boot mode from NVS
     loadPersistedState();
 
-    // GET /ota/targets — list of upload targets for the UI (registered before /ota)
+    // All /ota/* specific routes must be registered BEFORE /ota (prefix match issue).
+
+    // GET /ota/targets
     server.on("/ota/targets", HTTP_GET, [](AsyncWebServerRequest *req) {
         if (!hasSession(req)) { req->send(401); return; }
         String json = "[";
@@ -282,31 +284,6 @@ void init(AsyncWebServer &server, const char *password,
         req->send(200, "application/json", json);
     });
 
-    // GET /ota — login form or boot mode UI (registered after /ota/*)
-    server.on("/ota", HTTP_GET, [](AsyncWebServerRequest *req) {
-        if (!hasSession(req)) {
-            req->send(200, "text/html", LOGIN_HTML);
-            return;
-        }
-        if (_state != EspOta::State::BOOT_MODE)
-            toState(EspOta::State::BOOT_MODE); // RAM only — no NVS until upload completes
-        req->send(200, "text/html", OTA_HTML);
-    });
-
-    // POST /ota/login — validate password, set session cookie, enter BOOT_MODE
-    server.on("/ota/login", HTTP_POST, [](AsyncWebServerRequest *req) {
-        String input = req->hasParam("p", true) ? req->getParam("p", true)->value() : "";
-        if (!_password.isEmpty() && input != _password) {
-            req->send(200, "text/html", LOGIN_HTML);
-            return;
-        }
-        toState(EspOta::State::BOOT_MODE); // RAM only — no NVS until upload completes
-        AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
-        resp->addHeader("Location", "/ota");
-        applySessionCookie(resp);
-        req->send(resp);
-    });
-
     // GET /ota/exit — confirm firmware, BOOT_MODE → NORMAL, redirect home
     // No session required — exiting is always safe.
     server.on("/ota/exit", HTTP_GET, [](AsyncWebServerRequest *req) {
@@ -316,6 +293,31 @@ void init(AsyncWebServer &server, const char *password,
         AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
         resp->addHeader("Location", "/");
         req->send(resp);
+    });
+
+    // POST /ota/login — validate password, set session cookie, enter BOOT_MODE
+    server.on("/ota/login", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String input = req->hasParam("p", true) ? req->getParam("p", true)->value() : "";
+        if (!_password.isEmpty() && input != _password) {
+            req->send(200, "text/html", LOGIN_HTML);
+            return;
+        }
+        toState(EspOta::State::BOOT_MODE);
+        AsyncWebServerResponse *resp = req->beginResponse(302, "text/plain", "");
+        resp->addHeader("Location", "/ota");
+        applySessionCookie(resp);
+        req->send(resp);
+    });
+
+    // GET /ota — login form or boot mode UI (must be last of the /ota routes)
+    server.on("/ota", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (!hasSession(req)) {
+            req->send(200, "text/html", LOGIN_HTML);
+            return;
+        }
+        if (_state != EspOta::State::BOOT_MODE)
+            toState(EspOta::State::BOOT_MODE);
+        req->send(200, "text/html", OTA_HTML);
     });
 
     // POST /update/<label> — one endpoint per configured target
